@@ -110,7 +110,9 @@ This is not a general C preprocessor. Local includes must be unconditional excep
     movl ${{value}}, %eax
 ```
 
-This declares `static void asm_load(FILE *output, int value)`. Parameter types are `int`, `uint`, `size`, and `string`. Repeated placeholders retain their order; unused parameters, duplicate names, and unknown placeholders are errors. File-level blank lines and comments beginning with `#` before the first declaration are omitted. Templates include their own `<stdio.h>` declarations.
+This declares `static void asm_load(FILE *output, int value)`. Parameter types are `int`, `uint`, `size`, and `string`. Repeated placeholders retain their order; unused parameters, duplicate names, and unknown placeholders are errors. Templates include their own `<stdio.h>` declarations.
+
+Use `##` as the first non-whitespace characters on a line for comments for template authors. The converter skips these lines before substituting placeholders. Use `#` inside a template for assembly comments. These lines are emitted with their placeholders expanded. Before the first declaration, the file can contain blank lines and `##` comments.
 
 `c_source_emit::literal::function(name, bytes)` creates a C function that writes fixed bytes with `fwrite`. It handles NUL and non-UTF-8 bytes and splits long data below C11's minimum literal-size limit. Templates and fixed text share C escaping. The writer does not hide FILE errors; callers can check `ferror` according to their own output policy.
 

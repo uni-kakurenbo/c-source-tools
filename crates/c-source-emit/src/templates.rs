@@ -89,6 +89,12 @@ pub fn convert(text: &str) -> Result<String> {
     let mut names = BTreeSet::new();
 
     for line in text.lines() {
+        let trimmed = line.trim_start();
+
+        if trimmed.starts_with("##") {
+            continue;
+        }
+
         if let Some(declaration) = line.strip_prefix('@') {
             let parts: Vec<_> = declaration
                 .split(' ')
@@ -122,7 +128,7 @@ pub fn convert(text: &str) -> Result<String> {
             });
         } else if let Some(block) = blocks.last_mut() {
             block.lines.push(line);
-        } else if !line.trim_start().is_empty() && !line.trim_start().starts_with('#') {
+        } else if !trimmed.is_empty() {
             return Err("Assembly before first template".into());
         }
     }

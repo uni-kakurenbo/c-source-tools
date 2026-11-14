@@ -247,37 +247,43 @@ fn template_types_and_repeated_placeholders_keep_argument_order() {
 }
 
 #[test]
-fn template_preamble_comments_and_blank_lines_are_discarded() {
-    let body = "@show value:int\n# emitted comment\n{{value}}\n";
+fn template_author_comments_are_skipped_before_placeholder_substitution() {
+    let source = concat!(
+        "## file description\r\n\r\n",
+        "@show value:int\r\n",
+        " \t## 日本語 {{unused}}\r\n",
+        "\t# emitted value: {{value}}\r\n",
+        "\t.ascii \"## literal\"\r\n",
+        "## @not_a_template %eax }}\r\n",
+    );
 
-    for preamble in [
-        "# file description\n",
-        "\n \t\n  # 日本語 {{unused}}\n\t# @not_a_template %eax\n\n",
-        "# Windows line endings\r\n\r\n",
-    ] {
-        assert_eq!(
-            templates::convert(&format!("{preamble}{body}")).unwrap(),
-            templates::convert(body).unwrap()
-        );
-    }
+    let body = "@show value:int\n\t# emitted value: {{value}}\n\t.ascii \"## literal\"\n";
+
+    let code = templates::convert(source).unwrap();
+
+    assert_eq!(code, templates::convert(body).unwrap());
+    assert!(code.contains("# emitted value: %d"));
 }
 
 #[test]
 fn invalid_templates_are_rejected() {
     for (text, expected) in [
         ("", "No templates"),
-        ("\n# comments only\n", "No templates"),
+        ("\n## comments only\n", "No templates"),
         ("assembly", "Assembly before"),
         (
-            "# description\n\n movl $1, %eax\n@show\nbody",
+            "## description\n\n movl $1, %eax\n@show\nbody",
             "Assembly before",
         ),
+        ("# emitted comment\n@show\nbody", "Assembly before"),
         ("@", "Invalid template"),
         ("@bad", "Empty template"),
+        ("@bad\n## comments only", "Empty template"),
         ("@bad n:int\n{{missing}}", "Unknown placeholder"),
         ("@bad n:int\n{{n}", "Malformed placeholder"),
         ("@bad\nstray }}", "Malformed placeholder"),
         ("@bad n:int\nunused", "Unused template parameter"),
+        ("@bad n:int\n## {{n}}\nret", "Unused template parameter"),
         ("@bad\n@bad\nbody", "duplicate template"),
         ("@bad x:float\n{{x}}", "Invalid template parameter"),
         ("@bad output:int\n{{output}}", "reserved parameter"),
