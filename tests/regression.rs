@@ -365,15 +365,6 @@ fn bundle_groups_directories_and_places_linked_siblings_together() {
     }
 
     let rendered = fixture.project().render(&["src/main.c".into()]).unwrap();
-    let sections: Vec<_> = rendered
-        .text
-        .lines()
-        .filter_map(|line| {
-            line.strip_prefix(" * Source: ")
-                .or_else(|| line.strip_prefix("/* ===== ")?.strip_suffix(" ===== */"))
-        })
-        .collect();
-
     assert_eq!(
         rendered.graph.sources,
         [
@@ -387,7 +378,7 @@ fn bundle_groups_directories_and_places_linked_siblings_together() {
     );
 
     assert_eq!(
-        sections,
+        bundle_sections(&rendered.text),
         [
             "src/stage/lexer.h",
             "src/support/trace.h",
@@ -399,6 +390,87 @@ fn bundle_groups_directories_and_places_linked_siblings_together() {
             "src/stage/parser.c",
             "src/stage/reader.c",
             "src/stage/ast/tree.c",
+            "src/support/trace.c",
+        ]
+    );
+}
+
+fn bundle_sections(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter_map(|line| {
+            line.strip_prefix(" * Source: ")
+                .or_else(|| line.strip_prefix("/* ===== ")?.strip_suffix(" ===== */"))
+        })
+        .collect()
+}
+
+#[test]
+fn bundle_section_order_groups_headers_after_their_dependencies() {
+    let fixture = Fixture::new();
+
+    fixture.put(
+        "src/main.c",
+        concat!(
+            "#include \"support/trace.h\"\n",
+            "#include \"stage/parser.h\"\n",
+            "#include \"stage/lexer.h\"\n",
+            "int main(void) { return 0; }\n",
+        ),
+    );
+
+    fixture.put(
+        "src/stage/parser.h",
+        "#include \"support/token.h\"\nToken parse(void);\n",
+    );
+    fixture.put("src/stage/lexer.h", "int lex(void);\n");
+    fixture.put("src/support/token.h", "typedef int Token;\n");
+    fixture.put("src/support/trace.h", "void trace(void);\n");
+
+    fixture.put(
+        "src/stage/parser.c",
+        "#include \"parser.h\"\nToken parse(void) { return 0; }\n",
+    );
+
+    fixture.put(
+        "src/support/trace.c",
+        "#include \"trace.h\"\nvoid trace(void) {}\n",
+    );
+
+    let mut project = fixture.project();
+    let entries = ["src/main.c".into()];
+    project.bundle_order = Some(|path| usize::from(path.starts_with("src/support/")));
+
+    let rendered = project.render(&entries).unwrap();
+
+    assert_eq!(
+        bundle_sections(&rendered.text),
+        [
+            "src/support/token.h",
+            "src/stage/parser.h",
+            "src/stage/lexer.h",
+            "src/support/trace.h",
+            "src/main.c",
+            "src/stage/parser.c",
+            "src/support/trace.c",
+        ]
+    );
+
+    fixture.put(
+        "src/support/token.h",
+        "#include \"stage/parser.h\"\ntypedef int Token;\n",
+    );
+
+    let rendered = project.render(&entries).unwrap();
+
+    assert_eq!(
+        bundle_sections(&rendered.text),
+        [
+            "src/support/trace.h",
+            "src/support/token.h",
+            "src/stage/parser.h",
+            "src/stage/lexer.h",
+            "src/main.c",
+            "src/stage/parser.c",
             "src/support/trace.c",
         ]
     );

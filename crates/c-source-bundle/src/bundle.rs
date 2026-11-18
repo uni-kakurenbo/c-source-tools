@@ -1,5 +1,6 @@
 use crate::c_source::{Scanner, directives, lex};
-use crate::layout::ordered_sources;
+pub use crate::layout::SectionOrder;
+use crate::layout::{ordered_headers, ordered_sources};
 use crate::modules::{Graph, Project, module_names};
 use crate::{Result, read_text};
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,7 +17,7 @@ struct Expander<'a> {
     project: &'a Project,
     graph: &'a Graph,
     generated: &'a BTreeMap<String, String>,
-    headers: String,
+    headers: Vec<(&'a str, String)>,
     seen: BTreeSet<String>,
     system_headers: BTreeSet<String>,
 }
@@ -90,8 +91,7 @@ impl Expander<'_> {
                 expanded.push_str(&self.expand_generated(generated)?);
             } else if self.seen.insert(include.name.clone()) {
                 let header = self.expand(&include.name)?;
-                writeln!(self.headers, "\n/* ===== {} ===== */", include.name).unwrap();
-                writeln!(self.headers, "{header}").unwrap();
+                self.headers.push((&include.name, header));
             }
         }
 
@@ -106,6 +106,16 @@ pub fn render(
     entries: &[String],
     generated: &BTreeMap<String, String>,
 ) -> Result<Rendered> {
+    render_with_order(project, entries, generated, None)
+}
+
+/// Render with an optional section priority for implementations and self-contained headers.
+pub fn render_with_order(
+    project: &Project,
+    entries: &[String],
+    generated: &BTreeMap<String, String>,
+    order: Option<SectionOrder>,
+) -> Result<Rendered> {
     let graph = project.resolve(entries)?;
     let module_names = module_names(&graph.sources)?;
 
@@ -119,14 +129,14 @@ pub fn render(
         project,
         graph: &graph,
         generated,
-        headers: String::new(),
+        headers: Vec::new(),
         seen: BTreeSet::new(),
         system_headers: BTreeSet::new(),
     };
 
     let mut bodies = BTreeMap::new();
 
-    // Expand in discovery order so the header prelude keeps its dependency order.
+    // Collect headers in expansion order for projects with cyclic includes.
     for source in &graph.sources {
         bodies.insert(source.as_str(), expander.expand(source)?);
     }
@@ -137,9 +147,22 @@ pub fn render(
         writeln!(text, "#include <{header}>").unwrap();
     }
 
-    text.push_str(&expander.headers);
+    let headers = &expander.headers;
+    let header_order = match order {
+        Some(order) => {
+            let names: Vec<_> = headers.iter().map(|&(name, _)| name).collect();
+            ordered_headers(&graph, &names, order)
+        }
+        None => (0..headers.len()).collect(),
+    };
 
-    for source in ordered_sources(&graph) {
+    for index in header_order {
+        let (name, header) = &headers[index];
+        writeln!(text, "\n/* ===== {name} ===== */").unwrap();
+        writeln!(text, "{header}").unwrap();
+    }
+
+    for source in ordered_sources(&graph, order) {
         let body = &bodies[source];
         let name = &module_names[source];
 

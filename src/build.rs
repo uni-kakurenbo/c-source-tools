@@ -1,6 +1,6 @@
 use crate::compiler::Assembly;
 use crate::{Result, read_text, templates, write_text};
-use c_source_bundle::bundle::{self, Rendered};
+use c_source_bundle::bundle::{self, Rendered, SectionOrder};
 use c_source_bundle::modules::{Graph, Project};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,6 +33,8 @@ impl Default for Settings {
 pub struct Build {
     pub root: PathBuf,
     pub settings: Settings,
+    /// Section priority for bundled implementations and self-contained headers.
+    pub bundle_order: Option<SectionOrder>,
     /// Environment passed to compiler children and excluded from cache keys.
     /// Put variables that affect generated output in `Compiler::environment`.
     pub environment: BTreeMap<OsString, OsString>,
@@ -110,6 +112,7 @@ impl Build {
         Ok(Self {
             root: project.root,
             settings,
+            bundle_order: None,
             environment: BTreeMap::new(),
         })
     }
@@ -186,7 +189,7 @@ impl Build {
     pub fn render(&self, entries: &[String]) -> Result<Rendered> {
         let graph = self.resolve(entries)?;
         let (project, generated) = self.prepare(Some(&graph.generated))?;
-        bundle::render(&project, entries, &generated)
+        bundle::render_with_order(&project, entries, &generated, self.bundle_order)
     }
 
     fn publish(&self, generated: &BTreeMap<String, String>) -> Result<PathBuf> {

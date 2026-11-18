@@ -5,6 +5,9 @@ use std::path::{Components, Path};
 
 type Neighbors<'a> = BTreeMap<&'a Path, BTreeSet<&'a Path>>;
 
+/// Section priority for a project-relative source or header path. Lower values come first.
+pub type SectionOrder = fn(&str) -> usize;
+
 #[derive(Default)]
 struct Directory<'a> {
     sources: Vec<&'a str>,
@@ -88,7 +91,7 @@ fn local_neighbors(graph: &Graph) -> Neighbors<'_> {
     neighbors
 }
 
-pub(crate) fn ordered_sources(graph: &Graph) -> Vec<&str> {
+pub(crate) fn ordered_sources(graph: &Graph, order: Option<SectionOrder>) -> Vec<&str> {
     let mut root = Directory::default();
 
     for source in &graph.sources {
@@ -99,6 +102,51 @@ pub(crate) fn ordered_sources(graph: &Graph) -> Vec<&str> {
 
     let mut ordered = Vec::with_capacity(graph.sources.len());
     root.append_sources(&local_neighbors(graph), &mut ordered);
+
+    if let Some(order) = order {
+        ordered.sort_by_cached_key(|source| order(source));
+    }
+
+    ordered
+}
+
+pub(crate) fn ordered_headers(graph: &Graph, names: &[&str], order: SectionOrder) -> Vec<usize> {
+    let indices: BTreeMap<_, _> = names
+        .iter()
+        .enumerate()
+        .map(|(index, &name)| (name, index))
+        .collect();
+
+    let mut priorities: Vec<_> = names
+        .iter()
+        .enumerate()
+        .map(|(index, &name)| {
+            let directory = name.rsplit_once('/').map_or("", |(directory, _)| directory);
+            (order(name), directory, index)
+        })
+        .collect();
+
+    // The expansion order puts dependencies first. Move each dependency up to its first user.
+    for (index, name) in names.iter().enumerate().rev() {
+        for include in graph.includes[*name]
+            .iter()
+            .filter(|include| !include.system)
+        {
+            let Some(&dependency) = indices.get(include.name.as_str()) else {
+                continue;
+            };
+
+            if dependency >= index {
+                // A cycle needs the original expansion order.
+                return (0..names.len()).collect();
+            }
+
+            priorities[dependency] = priorities[dependency].min(priorities[index]);
+        }
+    }
+
+    let mut ordered: Vec<_> = (0..names.len()).collect();
+    ordered.sort_by_key(|&index| priorities[index]);
 
     ordered
 }
