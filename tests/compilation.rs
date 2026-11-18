@@ -138,6 +138,67 @@ fn modular_and_bundled_sources_compile_and_preserve_template_output() {
 }
 
 #[test]
+fn c23_private_declarations_are_isolated_between_modules() {
+    let fixture = Fixture::new();
+    fixture.put(
+        "src/main.c",
+        "#include \"left.h\"\n#include \"right.h\"\nint main(void) { return left() + right() != 42; }\n",
+    );
+
+    fixture.put("src/profiles/fixture.c", "int fixture_profile;\n");
+
+    for (module, value) in [("left", 20), ("right", 22)] {
+        fixture.put(
+            &format!("src/{module}.h"),
+            &format!("#pragma once\nint {module}(void);\n"),
+        );
+
+        fixture.put(
+            &format!("src/{module}.c"),
+            &format!(
+                r#"#include "{module}.h"
+#include <stdint.h>
+#include <stdlib.h>
+
+typedef enum Mode : uint64_t {{ MODE = {value} }} Mode;
+constexpr uint64_t noreturn = MODE;
+static_assert(sizeof(Mode) == sizeof(uint64_t));
+
+[[noreturn]] static void fail(int) {{ abort(); }}
+
+int {module}(void) {{
+    if (noreturn != {value}) fail(0);
+    return (int)noreturn;
+}}
+"#
+            ),
+        );
+    }
+
+    let root = &fixture.0;
+    let output = Build::new(root)
+        .unwrap()
+        .bundle(&entries("fixture"), Path::new("dist/fixture.c"))
+        .unwrap();
+
+    let compiler = std::env::var_os("CC")
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "gcc".into());
+    let binary = root.join(if cfg!(windows) { "fixture.exe" } else { "fixture" });
+
+    checked(
+        Command::new(compiler)
+            .current_dir(root)
+            .args(["-std=c23", "-Wall", "-Wextra", "-Wpedantic", "-Werror"])
+            .arg(output.bundle)
+            .arg("-o")
+            .arg(&binary),
+    );
+
+    checked(Command::new(binary).current_dir(root));
+}
+
+#[test]
 fn templates_supply_their_standard_headers_in_modular_and_bundled_sources() {
     let fixture = Fixture::new();
     fixture.put("src/plain.asm", "@plain\nplain\n");

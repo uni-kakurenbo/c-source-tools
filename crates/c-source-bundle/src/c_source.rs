@@ -191,6 +191,7 @@ fn builtin(s: &str) -> bool {
             | "int"
             | "float"
             | "double"
+            | "bool"
             | "_Bool"
             | "_Complex"
     )
@@ -208,12 +209,44 @@ fn specifier(s: &str) -> bool {
             "typedef"
                 | "static"
                 | "extern"
+                | "constexpr"
                 | "auto"
                 | "register"
                 | "inline"
                 | "_Noreturn"
+                | "thread_local"
                 | "_Thread_local"
         )
+}
+
+fn group_end(tokens: &[Token], start: usize) -> Option<usize> {
+    let open = tokens.get(start)?.text.as_str();
+    let close = match open {
+        "(" => ")",
+        "[" => "]",
+        "{" => "}",
+        _ => return None,
+    };
+
+    let mut depth = 1;
+    for (i, token) in tokens.iter().enumerate().skip(start + 1) {
+        if token.text == open {
+            depth += 1;
+        } else if token.text == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i + 1);
+            }
+        }
+    }
+
+    None
+}
+
+fn starts_attributes(tokens: &[Token], start: usize) -> bool {
+    tokens
+        .get(start..start + 2)
+        .is_some_and(|pair| pair.iter().all(|token| token.text == "["))
 }
 
 pub struct Scanner {
@@ -242,26 +275,7 @@ impl Scanner {
     }
 
     fn group(&self, start: usize) -> Result<usize> {
-        let open = self.at(start);
-        let close = match open {
-            "(" => ")",
-            "[" => "]",
-            "{" => "}",
-            _ => return Err(self.error(start)),
-        };
-
-        let mut depth = 1;
-        for i in start + 1..self.tokens.len() {
-            if self.at(i) == open {
-                depth += 1;
-            } else if self.at(i) == close {
-                depth -= 1;
-                if depth == 0 {
-                    return Ok(i + 1);
-                }
-            }
-        }
-        Err(self.error(start))
+        group_end(&self.tokens, start).ok_or_else(|| self.error(start))
     }
 
     fn declarator(&self, i: &mut usize) -> Result<usize> {
@@ -287,11 +301,44 @@ impl Scanner {
             return Err(self.error(*i));
         }
 
-        while matches!(self.at(*i), "(" | "[") {
+        loop {
+            *i = self.skip_attributes(*i)?;
+            if !matches!(self.at(*i), "(" | "[") {
+                break;
+            }
+
             *i = self.group(*i)?;
         }
 
         Ok(name)
+    }
+
+    fn skip_attributes(&self, mut i: usize) -> Result<usize> {
+        while starts_attributes(&self.tokens, i) {
+            i = self.group(i)?;
+        }
+
+        Ok(i)
+    }
+
+    fn enum_base_end(&self, start: usize) -> Result<usize> {
+        let mut i = start;
+        let mut has_type = false;
+
+        while builtin(self.at(i)) || qualifier(self.at(i)) {
+            has_type |= builtin(self.at(i));
+            i += 1;
+        }
+
+        if !has_type {
+            if !self.is_id(i) {
+                return Err(self.error(i));
+            }
+
+            i += 1;
+        }
+
+        Ok(i)
     }
 
     fn enum_names(&mut self, start: usize, end: usize) -> Result<()> {
@@ -321,30 +368,39 @@ impl Scanner {
     }
 
     fn declaration(&mut self, start: usize, field: bool) -> Result<usize> {
-        let mut i = start;
+        let mut i = self.skip_attributes(start)?;
+        if matches!(self.at(i), "static_assert" | "_Static_assert") {
+            i = self.group(i + 1)?;
+            if self.at(i) != ";" {
+                return Err(self.error(i));
+            }
+
+            return Ok(i + 1);
+        }
+
         let mut local = false;
         let mut has_type = false;
 
         while i < self.tokens.len() {
             let s = self.at(i).to_owned();
             if specifier(&s) {
-                local |= matches!(s.as_str(), "static" | "typedef");
+                local |= matches!(s.as_str(), "static" | "typedef" | "constexpr");
                 has_type |= builtin(&s);
                 i += 1;
                 continue;
             }
 
-            if matches!(s.as_str(), "_Alignas" | "_Atomic") {
+            if matches!(s.as_str(), "alignas" | "_Alignas" | "_Atomic") {
                 i += 1;
                 if self.at(i) == "(" {
                     i = self.group(i)?;
+                    has_type |= s == "_Atomic";
                 }
-                has_type = true;
                 continue;
             }
 
             if matches!(s.as_str(), "struct" | "union" | "enum") {
-                i += 1;
+                i = self.skip_attributes(i + 1)?;
                 let tag = if self.is_id(i) {
                     let tag = self.at(i).to_owned();
                     i += 1;
@@ -353,11 +409,27 @@ impl Scanner {
                     None
                 };
 
+                let mut fixed_enum = false;
+                if s == "enum" && self.at(i) == ":" {
+                    if !field {
+                        i = self.enum_base_end(i + 1)?;
+                        fixed_enum = true;
+                    } else if let Ok(end) = self.enum_base_end(i + 1)
+                        && (tag.is_none() || self.at(end) == "{")
+                    {
+                        // A colon after a member's enum tag can introduce a bit-field.
+                        i = end;
+                    }
+                }
+
+                if !field && (self.at(i) == "{" || fixed_enum)
+                    && let Some(tag) = tag
+                {
+                    self.tags.insert(tag);
+                }
+
                 if self.at(i) == "{" {
                     let end = self.group(i)?;
-                    if !field && let Some(tag) = tag {
-                        self.tags.insert(tag);
-                    }
                     if s == "enum" && !field {
                         self.enum_names(i + 1, end - 1)?;
                     }
@@ -445,11 +517,6 @@ impl Scanner {
         while i < scanner.tokens.len() {
             if scanner.at(i) == ";" {
                 i += 1;
-            } else if scanner.at(i) == "_Static_assert" {
-                i = scanner.group(i + 1)?;
-                if scanner.at(i) == ";" {
-                    i += 1;
-                }
             } else {
                 i = scanner.declaration(i, false)?;
             }
@@ -461,7 +528,7 @@ impl Scanner {
                 continue;
             }
 
-            let mut body = i + 1;
+            let mut body = scanner.skip_attributes(i + 1)?;
             if scanner.is_id(body) {
                 body += 1;
             }
@@ -490,16 +557,28 @@ impl Scanner {
     fn rewrite_inner(&self, text: &str, prefix: &str, directive: bool) -> Result<String> {
         let mut result = String::new();
         let mut cursor = 0;
-        let mut previous = String::new();
+        let mut previous = "";
+        let tokens = lex(text, !directive)?;
 
-        for token in lex(text, !directive)? {
+        let mut i = 0;
+        while let Some(token) = tokens.get(i) {
             result.push_str(&text[cursor..token.start]);
+
+            if starts_attributes(&tokens, i)
+                && let Some(end) = group_end(&tokens, i)
+            {
+                // Standard attribute names have their own namespace.
+                cursor = tokens[end - 1].end;
+                result.push_str(&text[token.start..cursor]);
+                i = end;
+                continue;
+            }
 
             if token.kind == Kind::Directive {
                 result.push_str(&self.rewrite_inner(&token.text, prefix, true)?);
             } else {
-                let is_tag = matches!(previous.as_str(), "struct" | "union" | "enum");
-                let member = matches!(previous.as_str(), "." | "->")
+                let is_tag = matches!(previous, "struct" | "union" | "enum");
+                let member = matches!(previous, "." | "->")
                     || (!directive && self.members.contains(&token.start));
                 let names = if is_tag { &self.tags } else { &self.names };
                 if token.kind == Kind::Identifier && !member && names.contains(&token.text) {
@@ -509,7 +588,8 @@ impl Scanner {
             }
 
             cursor = token.end;
-            previous = token.text;
+            previous = &token.text;
+            i += 1;
         }
 
         result.push_str(&text[cursor..]);
