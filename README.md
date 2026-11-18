@@ -23,6 +23,8 @@ The program prints `Hello, world!`. On Windows, GCC adds the `.exe` suffix to th
 
 Pass each entry source with `--entry`. Local includes discover companion `.c` implementations. The bundle contains reachable modules and generated includes and can be compiled as a single C source with a standard compiler.
 
+After the headers, the bundle groups implementations by directory and places directly connected siblings next to each other when possible. An include from a `.c` file or its matching `.h` can connect it to another implementation in the same directory. Discovery order breaks ties.
+
 ## Commands
 
 ```text

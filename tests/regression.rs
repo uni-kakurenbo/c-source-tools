@@ -329,6 +329,82 @@ fn discovery_handles_cycles_fallbacks_and_unregistered_modules() {
 }
 
 #[test]
+fn bundle_groups_directories_and_places_linked_siblings_together() {
+    let fixture = Fixture::new();
+    fixture.put(
+        "src/main.c",
+        concat!(
+            "#include \"stage/lexer.h\"\n",
+            "#include \"support/trace.h\"\n",
+            "#include \"stage/reader.h\"\n",
+            "#include \"stage/parser.h\"\n",
+            "int main(void) { return 0; }\n",
+        ),
+    );
+
+    for (module, dependencies) in [
+        ("stage/lexer", ""),
+        ("stage/ast/tree", ""),
+        ("support/trace", ""),
+        ("stage/reader", ""),
+        ("stage/parser", "#include \"lexer.h\"\n"),
+    ] {
+        fixture.put(&format!("src/{module}.h"), dependencies);
+
+        let name = module.rsplit('/').next().unwrap();
+        let extra = if name == "lexer" {
+            "#include \"ast/tree.h\"\n"
+        } else {
+            ""
+        };
+
+        fixture.put(
+            &format!("src/{module}.c"),
+            &format!("#include \"{name}.h\"\n{extra}int {name}(void) {{ return 0; }}\n"),
+        );
+    }
+
+    let rendered = fixture.project().render(&["src/main.c".into()]).unwrap();
+    let sections: Vec<_> = rendered
+        .text
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix(" * Source: ")
+                .or_else(|| line.strip_prefix("/* ===== ")?.strip_suffix(" ===== */"))
+        })
+        .collect();
+
+    assert_eq!(
+        rendered.graph.sources,
+        [
+            "src/main.c",
+            "src/stage/lexer.c",
+            "src/stage/ast/tree.c",
+            "src/support/trace.c",
+            "src/stage/reader.c",
+            "src/stage/parser.c",
+        ]
+    );
+
+    assert_eq!(
+        sections,
+        [
+            "src/stage/lexer.h",
+            "src/support/trace.h",
+            "src/stage/reader.h",
+            "src/stage/parser.h",
+            "src/stage/ast/tree.h",
+            "src/main.c",
+            "src/stage/lexer.c",
+            "src/stage/parser.c",
+            "src/stage/reader.c",
+            "src/stage/ast/tree.c",
+            "src/support/trace.c",
+        ]
+    );
+}
+
+#[test]
 fn include_and_entry_errors_are_explicit() {
     let fixture = Fixture::new();
     for (name, text, expected) in [
